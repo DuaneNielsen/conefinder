@@ -83,15 +83,3 @@ class TRT_engine():
             ymax = (boxes[i][3] - self.dh)/self.r
             new_bboxes.append([classes[i],scores[i],xmin,ymin,xmax,ymax])
         return new_bboxes
-
-def visualize(img,bbox_array):
-    for temp in bbox_array:
-        xmin = int(temp[2])
-        ymin = int(temp[3])
-        xmax = int(temp[4])
-        ymax = int(temp[5])
-        clas = int(temp[0])
-        score = temp[1]
-        cv2.rectangle(img,(xmin,ymin),(xmax,ymax), (105, 237, 249), 2)
-        img = cv2.putText(img, "class:"+str(clas)+" "+str(round(score,2)), (xmin,int(ymin)-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (105, 237, 249), 1)
-    return img

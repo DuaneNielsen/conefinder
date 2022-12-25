@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--image', default=resource_dir + "/images/cone.png")
     args = parser.parse_args()
 
+    print(args.engine)
     trt_engine = TRT_engine(args.engine)
     img = cv2.imread(args.image)
     results = trt_engine.predict(img, threshold=0.5)

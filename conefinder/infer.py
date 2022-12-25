@@ -95,13 +95,3 @@ def visualize(img,bbox_array):
         cv2.rectangle(img,(xmin,ymin),(xmax,ymax), (105, 237, 249), 2)
         img = cv2.putText(img, "class:"+str(clas)+" "+str(round(score,2)), (xmin,int(ymin)-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (105, 237, 249), 1)
     return img
-
-#trt_engine = TRT_engine("./trt_model/yolov7_tiny_fp16.engine")
-# trt_engine = TRT_engine("yolov7_fp32.engine")
-# img = cv2.imread("./pictures/cone.png")
-trt_engine = TRT_engine("cones_fp32.engine")
-img = cv2.imread("./pictures/cone.png")
-results = trt_engine.predict(img,threshold=0.5)
-img = visualize(img,results)
-cv2.imshow("img",img)
-cv2.waitKey(0)

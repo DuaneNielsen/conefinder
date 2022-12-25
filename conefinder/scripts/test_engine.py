@@ -30,8 +30,10 @@ def main():
     img = cv2.imread(args.image)
     results = trt_engine.predict(img, threshold=0.5)
     img = visualize(img, results)
+
     cv2.imshow("img", img)
     cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':

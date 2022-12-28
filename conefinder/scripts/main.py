@@ -10,12 +10,13 @@ import pyzed.sl as sl
 import torch.backends.cudnn as cudnn
 
 from pathlib import Path
-sys.path.insert(0, str(Path.home()) + '/yolov7')
 
+sys.path.insert(0, str(Path.home()) + '/yolov7')
+sys.path.insert(0, str(Path.home()) + '/YOLOv7_Tensorrt')
 from models.experimental import attempt_load
 from utils.general import check_img_size, non_max_suppression, scale_coords, xyxy2xywh
 from utils.torch_utils import select_device
-from utils.augmentations import letterbox
+from utils.datasets import letterbox
 
 from threading import Lock, Thread, Event
 from time import sleep
@@ -30,8 +31,9 @@ matplotlib.use('TkAgg')
 from matplotlib import pyplot as plt
 from collections import deque
 from conefinder.kmeans import cluster, random_init
+from infer import TRT_engine_8_4_1_5 as TRT_engine
 
-timers = False
+timers = True
 
 
 class Viewer2D:
@@ -183,13 +185,99 @@ def torch_thread(weights, img_size, conf_thres=0.2, iou_thres=0.45):
     print('torch exited')
 
 
+def visualize(img, bbox_array):
+    for temp in bbox_array:
+        xmin = int(temp[2])
+        ymin = int(temp[3])
+        xmax = int(temp[4])
+        ymax = int(temp[5])
+        clas = int(temp[0])
+        score = temp[1]
+        cv2.rectangle(img, (xmin, ymin), (xmax, ymax), (105, 237, 249), 2)
+        img = cv2.putText(img, "class:" + str(clas) + " " + str(round(score, 2)), (xmin, int(ymin) - 5),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (105, 237, 249), 1)
+    return img
+
+
+def xyxy2abcd(x_min, y_min, x_max, y_max):
+    output = np.zeros((4, 2))
+    # A ------ B
+    # | Object |
+    # D ------ C
+
+    output[0][0] = x_min
+    output[0][1] = y_min
+
+    output[1][0] = x_max
+    output[1][1] = y_min
+
+    output[2][0] = x_min
+    output[2][1] = y_max
+
+    output[3][0] = x_max
+    output[3][1] = y_max
+
+    # output = np.clip(output, a_min=0, a_max=)
+
+    return output
+
+
+def tensorrt_detections_to_custom_box(detections):
+    output = []
+    for d in detections:
+        xmin = int(d[2])
+        ymin = int(d[3])
+        xmax = int(d[4])
+        ymax = int(d[5])
+        clas = int(d[0])
+        score = d[1]
+
+        obj = sl.CustomBoxObjectData()
+        print(xmin, ymin, xmax, ymax)
+        obj.bounding_box_2d = xyxy2abcd(xmin, ymin, xmax, ymax)
+        obj.label = clas
+        obj.probability = score
+        obj.is_grounded = False
+        output.append(obj)
+    return output
+
+
+def tensort_thread(engine, img_size, conf_thres=0.2, iou_thres=0.45):
+    global ccc, exit_signal, run_signal, detections, detector_loaded, detector_exited
+
+    print("Intializing Network...")
+    trt_engine = TRT_engine(engine, img_size, debug=True)
+    detector_loaded.set()
+
+    while not exit_signal:
+        if run_signal:
+            lock.acquire()
+            predict_timer = Timer('predict')
+            results = trt_engine.predict(image_net, threshold=0.5)
+            predict_timer.print()
+            # img = visualize(image_net, results)
+            # cv2.imshow("img", img)
+            # cv2.waitKey(1)
+
+            # ZED CustomBox format (with inverse letterboxing tf applied)
+            detections = tensorrt_detections_to_custom_box(results)
+            lock.release()
+            run_signal = False
+        sleep(0.01)
+
+    detector_exited.set()
+    print('torch exited')
+
+
 def main(args_string=None, control_callback=None):
     global image_net, exit_signal, run_signal, detections, detector_loaded, detector_exited
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, help='model.pt path(s)')
+    parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640],
+                        help='the image size the yolo was trained at')
+    parser.add_argument('--engine', type=str, default=str(Path.home()/'yolov7.engine'), help='youlv7.engine path(s)')
     parser.add_argument('--svo', type=str, default=None, help='optional svo file')
-    parser.add_argument('--img_size', type=int, default=512, help='inference size (pixels)')
     parser.add_argument('--conf_thres', type=float, default=0.4, help='object confidence threshold')
     parser.add_argument('--frame_skip', type=int, default=1, help='skip frames')
     parser.add_argument('--save', type=str, default=None, help='write to file')
@@ -199,8 +287,8 @@ def main(args_string=None, control_callback=None):
     else:
         opt = parser.parse_args()
 
-    capture_thread = Thread(target=torch_thread,
-                            kwargs={'weights': opt.weights, 'img_size': opt.img_size, "conf_thres": opt.conf_thres})
+    capture_thread = Thread(target=tensort_thread,
+                            kwargs={'engine': opt.engine, 'img_size': opt.img_size, "conf_thres": opt.conf_thres})
     capture_thread.start()
 
     print("Initializing Camera...")
@@ -239,7 +327,7 @@ def main(args_string=None, control_callback=None):
 
     obj_param = sl.ObjectDetectionParameters()
     obj_param.detection_model = sl.DETECTION_MODEL.CUSTOM_BOX_OBJECTS
-    obj_param.enable_tracking = False
+    obj_param.enable_tracking = True
     zed.enable_object_detection(obj_param)
 
     objects = sl.Objects()
@@ -329,52 +417,53 @@ def main(args_string=None, control_callback=None):
             retrieve_display_data.print()
 
             # determine cone positions by clustering prev detections using k-means
-            with torch.no_grad():
-                if len(objects.object_list) > 0:
-
-                    # cluster detected tracks
-                    object_queue.append(objects.object_list)
-                    max_queue.append(len(objects.object_list))
-                    for object in sorted(objects.object_list, key=lambda k: k.id):
-                        print(
-                            f'{object.id}, {object.position}, {object.velocity}, {object.tracking_state} {object.action_state}')
-
-                    # current_frame_pos = torch.stack([torch.from_numpy(o.position) for o in objects.object_list])
-                    prev_pos = torch.stack([torch.from_numpy(o.position) for t in object_queue for o in t]).to(
-                        torch.float32)
-                    centers = random_init(prev_pos, max(max_queue))
-                    centers, codes = cluster(prev_pos, max(max_queue), centers)
-                    plot2D.update_cluster(centers, prev_pos)
-
-                    if control_callback:
-                        # center [cone_pos, cone_pos, ...]
-                        # cone_pos [left-right, up-down, distance]
-                        control_callback(centers)
+            # with torch.no_grad():
+            #     if len(objects.object_list) > 0:
+            #
+            #         # cluster detected tracks
+            #         object_queue.append(objects.object_list)
+            #         max_queue.append(len(objects.object_list))
+            #         for object in sorted(objects.object_list, key=lambda k: k.id):
+            #             print(
+            #                 f'{object.id}, {object.position}, {object.velocity}, {object.tracking_state} {object.action_state}')
+            #
+            #         # current_frame_pos = torch.stack([torch.from_numpy(o.position) for o in objects.object_list])
+            #         prev_pos = torch.stack([torch.from_numpy(o.position) for t in object_queue for o in t]).to(
+            #             torch.float32)
+            #         centers = random_init(prev_pos, max(max_queue))
+            #         centers, codes = cluster(prev_pos, max(max_queue), centers)
+            #         plot2D.update_cluster(centers, prev_pos)
+            #
+            #         if control_callback:
+            #             # center [cone_pos, cone_pos, ...]
+            #             # cone_pos [left-right, up-down, distance]
+            #             control_callback(centers)
 
             render = Timer("render")
             # 3D rendering
-            viewer.updateData(point_cloud_render, objects)
+            # viewer.updateData(point_cloud_render, objects)
             # 2D rendering
             np.copyto(image_left_ocv, image_left.get_data())
             cv_viewer.render_2D(image_left_ocv, image_scale, objects, obj_param.enable_tracking)
             global_image = cv2.hconcat([image_left_ocv, image_track_ocv])
-            # Tracking view
+            # global_image = cv2.hconcat([image_left_ocv])
             try:
                 track_view_generator.generate_view(objects, cam_w_pose, image_track_ocv, objects.is_tracked)
             except Exception:
                 continue
 
-            plot2D.update_zed(global_image)
+            # plot2D.update_zed(global_image)
             # print('global image')
-            # # cv2.namedWindow("ZED2i | 2D View and Birds View", cv2.WINDOW_AUTOSIZE)
+            cv2.namedWindow("ZED2i | 2D View and Birds View", cv2.WINDOW_AUTOSIZE)
             # print('create window')
-            # # cv2.imshow("ZED2i | 2D View and Birds View", global_image)
-            # print('waitkey')
+            cv2.imshow("ZED2i | 2D View and Birds View", global_image)
+            print('waitkey')
             key = cv2.waitKey(10)
             render.print()
             if key & 0xFF == ord('q'):
                 exit_signal = True
                 break
+
         else:
             break
 
@@ -396,11 +485,13 @@ if __name__ == '__main__':
     STEERING, THROTTLE = 0, 0
     p = torch.tensor([1.0, 0.1])
 
+
     def control_callback(centers):
         # this could jump around with random init, need a track ID fix
         controls[STEERING] = centers[0][0] * p[STEERING]
         controls[THROTTLE] = centers[0][2] * p[THROTTLE]
         print(controls)
+
 
     with torch.no_grad():
         main(control_callback=control_callback)

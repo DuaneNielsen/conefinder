@@ -1,6 +1,10 @@
 import cv2
 import pkg_resources
-from conefinder.infer import TRT_engine
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path.home()) + '/YOLOv7_Tensorrt')
+from infer import TRT_engine_8_4_1_5 as TRT_engine
 from argparse import ArgumentParser
 
 def visualize(img, bbox_array):
@@ -20,13 +24,15 @@ def visualize(img, bbox_array):
 def main():
     resource_dir = pkg_resources.resource_filename("conefinder", "resources")
 
+
     parser = ArgumentParser()
-    parser.add_argument('--engine', default="/yolov7.engine")
+    parser.add_argument('--engine', default=str(Path.home()/'yolov7.engine'))
     parser.add_argument('--image', default=resource_dir + "/images/cone.png")
+    parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640],
+                        help='the image size the yolo was trained at')
     args = parser.parse_args()
 
-    print(args.engine)
-    trt_engine = TRT_engine(args.engine)
+    trt_engine = TRT_engine(args.engine, args.img_size)
     img = cv2.imread(args.image)
     results = trt_engine.predict(img, threshold=0.5)
     img = visualize(img, results)

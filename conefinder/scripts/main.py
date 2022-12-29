@@ -33,7 +33,7 @@ from collections import deque
 from conefinder.kmeans import cluster, random_init
 from infer import TRT_engine_8_4_1_5 as TRT_engine
 
-timers = True
+timers = False
 
 
 class Viewer2D:
@@ -233,7 +233,7 @@ def tensorrt_detections_to_custom_box(detections):
         score = d[1]
 
         obj = sl.CustomBoxObjectData()
-        print(xmin, ymin, xmax, ymax)
+        # print(xmin, ymin, xmax, ymax)
         obj.bounding_box_2d = xyxy2abcd(xmin, ymin, xmax, ymax)
         obj.label = clas
         obj.probability = score
@@ -301,7 +301,7 @@ def main(args_string=None, control_callback=None):
 
     # Create a InitParameters object and set configuration parameters
     init_params = sl.InitParameters(input_t=input_type, svo_real_time_mode=True)
-    init_params.camera_resolution = sl.RESOLUTION.HD720
+    init_params.camera_resolution = sl.RESOLUTION.VGA
     init_params.coordinate_units = sl.UNIT.METER
     init_params.depth_mode = sl.DEPTH_MODE.PERFORMANCE  # QUALITY
     init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Y_UP
@@ -310,6 +310,7 @@ def main(args_string=None, control_callback=None):
         init_params.svo_real_time_mode = False
 
     runtime_params = sl.RuntimeParameters()
+    runtime_params.measure3D_reference_frame = sl.REFERENCE_FRAME.CAMERA
     status = zed.open(init_params)
 
     if status != sl.ERROR_CODE.SUCCESS:
@@ -372,6 +373,8 @@ def main(args_string=None, control_callback=None):
     object_queue = deque(maxlen=5)
     max_queue = deque(maxlen=5)
 
+    tracks = {}
+
     while viewer.is_available() and not exit_signal:
 
         frame += 1
@@ -407,6 +410,25 @@ def main(args_string=None, control_callback=None):
             wait_detection.print()
             zed.retrieve_objects(objects, obj_runtime_param)
 
+            print('***** CURRENT FRAME ****************************')
+            best_track = None
+            best_confidence = 0.
+            for object in objects.object_list:
+                if object.tracking_state == sl.OBJECT_TRACKING_STATE.OK:
+                    if object.confidence > best_confidence:
+                        best_track = object
+                        best_confidence = object.confidence
+
+            for object in objects.object_list:
+                if best_track is not None and object.id == best_track.id:
+                    print('*******  SELECTED TRACK ****************************')
+                print(f"id: {object.id} {object.confidence} {object.tracking_state} pos: f{object.position} vel:{object.velocity}")
+                if best_track is not None and object.id == best_track.id:
+                    print('****************************************************')
+
+            if best_track is not None and control_callback is not None:
+                control_callback(best_track.position)
+
             # -- Display
             # Retrieve display data
             retrieve_display_data = Timer('retrieve display data')
@@ -415,29 +437,6 @@ def main(args_string=None, control_callback=None):
             zed.retrieve_image(image_left, sl.VIEW.LEFT, sl.MEM.CPU, display_resolution)
             zed.get_position(cam_w_pose, sl.REFERENCE_FRAME.WORLD)
             retrieve_display_data.print()
-
-            # determine cone positions by clustering prev detections using k-means
-            # with torch.no_grad():
-            #     if len(objects.object_list) > 0:
-            #
-            #         # cluster detected tracks
-            #         object_queue.append(objects.object_list)
-            #         max_queue.append(len(objects.object_list))
-            #         for object in sorted(objects.object_list, key=lambda k: k.id):
-            #             print(
-            #                 f'{object.id}, {object.position}, {object.velocity}, {object.tracking_state} {object.action_state}')
-            #
-            #         # current_frame_pos = torch.stack([torch.from_numpy(o.position) for o in objects.object_list])
-            #         prev_pos = torch.stack([torch.from_numpy(o.position) for t in object_queue for o in t]).to(
-            #             torch.float32)
-            #         centers = random_init(prev_pos, max(max_queue))
-            #         centers, codes = cluster(prev_pos, max(max_queue), centers)
-            #         plot2D.update_cluster(centers, prev_pos)
-            #
-            #         if control_callback:
-            #             # center [cone_pos, cone_pos, ...]
-            #             # cone_pos [left-right, up-down, distance]
-            #             control_callback(centers)
 
             render = Timer("render")
             # 3D rendering
@@ -457,7 +456,6 @@ def main(args_string=None, control_callback=None):
             cv2.namedWindow("ZED2i | 2D View and Birds View", cv2.WINDOW_AUTOSIZE)
             # print('create window')
             cv2.imshow("ZED2i | 2D View and Birds View", global_image)
-            print('waitkey')
             key = cv2.waitKey(10)
             render.print()
             if key & 0xFF == ord('q'):
@@ -482,15 +480,14 @@ def main(args_string=None, control_callback=None):
 
 if __name__ == '__main__':
     controls = torch.zeros(2)
-    STEERING, THROTTLE = 0, 0
+    STEERING, THROTTLE = 0, 1
     p = torch.tensor([1.0, 0.1])
 
 
-    def control_callback(centers):
-        # this could jump around with random init, need a track ID fix
-        controls[STEERING] = centers[0][0] * p[STEERING]
-        controls[THROTTLE] = centers[0][2] * p[THROTTLE]
-        print(controls)
+    def control_callback(position):
+        controls[STEERING] = position[0] * p[STEERING]
+        controls[THROTTLE] = position[2] * p[STEERING]
+        print(f'STEERING {controls[STEERING]}  THROTTLE {controls[THROTTLE]}')
 
 
     with torch.no_grad():

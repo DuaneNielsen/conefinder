@@ -3,12 +3,17 @@ from threading import Lock, Event, Thread
 from time import sleep
 
 import numpy as np
-import torch
 from pyzed import sl as sl
-from torch.backends import cudnn as cudnn
 
 import sys
 from pathlib import Path
+import conefinder.logs
+
+log = conefinder.logs.setup(__package__).getChild(__name__.split('.')[-1])
+
+def print(msg):
+    log.debug(msg)
+
 
 """
 expects yolov7 repo in home directory for pytorch

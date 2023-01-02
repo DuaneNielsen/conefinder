@@ -331,7 +331,7 @@ def find(zed, runtime_params, obj_runtime_param):
         if best_track is not None and object.id == best_track.id:
             print('****************************************************')
 
-    return best_track
+    return best_track, objects
 
 
 class Timer:

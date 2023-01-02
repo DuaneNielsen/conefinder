@@ -113,7 +113,7 @@ def main(args_string=None, control_callback=None):
 
     while viewer.is_available() and not conefinder.conefinder.exit_signal:
 
-        best_track = find(zed, runtime_params, obj_runtime_param)
+        best_track, _ = find(zed, runtime_params, obj_runtime_param)
 
         if best_track is not None and control_callback is not None:
             control_callback(best_track.position)
